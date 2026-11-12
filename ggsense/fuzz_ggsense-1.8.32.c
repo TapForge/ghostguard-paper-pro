@@ -2,7 +2,7 @@
 // Invariants: no crash; a non-empty tr_box stays on screen; counters only grow; tr_active implies defer on
 // or a cycle started before defer went off (set_defer ends cycles, so: tr_active implies cfg.defer).
 #define RUNDIR TESTRUN
-#include "ggsense-1.8.30.c"
+#include "ggsense-1.8.32.c"
 
 static uint8_t *frame;
 static unsigned long long rng = 88172645463325252ULL;

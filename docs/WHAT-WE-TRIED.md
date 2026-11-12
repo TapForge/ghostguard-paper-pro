@@ -35,6 +35,10 @@ For the terms (STD, co-drive, waveform, xochitl) see [HOW-IT-WORKS.md](HOW-IT-WO
 | 18 | 1.8.29 | White intermediate: old page, white, new page | Cleans | Owner did not like the feel |
 | 19 | (experiments) | Soft pulses, second co-drive, shorter tables as a flash-free second pass | Left the trace | Rejected |
 | 20 | **1.8.30** | One full refresh with a white tail in the STD table | Fast, no visible trace to the eye, no second flash | **Chosen** |
+| 21 | 1.8.30 + extra `bwturn` | Black-and-white pages turn like colour pages (`tf_chroma 0`) | One full refresh, no visible trace | Owner asked for it; **kept** |
+| 22 | extra `ggrefresh` | A refresh button in the document toolbar | One full in-place refresh on a tap | **Kept** |
+| 23 | extra `viewchange` | View change with the stock refresh at the change (`defer 0`) | No more "ghost first, then a hard flash" after closing a document, but Settings kept traces | **Kept**; Settings handled by 24 |
+| 24 | 1.8.31 / 1.8.32 + extra `settingskb` | One in-place clean at Settings opening and closing and at keyboard opening | Owner: Settings clean, no trace | **Kept** |
 
 ## 2. The long history in short paragraphs
 
@@ -132,7 +136,7 @@ The tail is the only change that reached the owner's goal. It does not add a pas
 - A turn away from a colour page is a normal, single full-refresh turn. The tail pushes the leftover of the old text towards white inside the same refresh.
 - In earlier camera tests the tail, written by hand into a co-driven turn, removed part of the trace but not all of it. For the full-refresh turn the camera already read the plain single refresh as clean, so it could not judge the tail. The owner's eye could, and judged the result good.
 
-Black-and-white and sparse-colour pages stay on the flash-free co-drive path. View changes get one in-place clean. Menus, popups, typing and writing get no added flash.
+Black-and-white and sparse-colour pages stay on the flash-free co-drive path in the engine itself; the `bwturn` start-up extra, which the owner asked for and kept, turns them like colour pages instead (row 21). Closing a document keeps xochitl's own refresh at the change (`defer 0`, row 23). Settings opening and closing, and the keyboard opening, get one in-place clean about half a second later (row 24), which the owner found clean. The document toolbar has a refresh button (row 22). Menus, popups, typing and writing get no added flash.
 
 ## 5. What was not tested, and what may go wrong
 

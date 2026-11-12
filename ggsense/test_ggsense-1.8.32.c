@@ -1,7 +1,7 @@
 // Host-side test harness for ggsense.c (macOS / Linux). Includes the sensor directly and drives it
 // with a synthetic RGB32 frame and log lines in the exact format xochitl 3.29.1 prints.
 #define RUNDIR TESTRUN
-#include "ggsense-1.8.30.c"
+#include "ggsense-1.8.32.c"
 
 static uint8_t *frame;
 static int fails;
@@ -2245,7 +2245,7 @@ static void test_white_turn(void) {
     {
         ggq("qml", "GGQ 7 status");
         char *st = slurp(TESTRUN "/status.json");
-        CHECK(st && strstr(st, "\"wh\":[0,0,0,") && strstr(st, "\"v\":\"ggsense 1.8.30\"}"), "the status file carries the counters");
+        CHECK(st && strstr(st, "\"wh\":[0,0,0,") && strstr(st, "\"v\":\"ggsense 1.8.32\"}"), "the status file carries the counters");
     }
 
     printf("     leafing: a turn while the page is owed is not promoted, its frame joins the page behind the white\n");
@@ -2452,6 +2452,241 @@ static void test_white_turn(void) {
     cfg = sv; xo_state = sv_xo; host_rc = sv_rc; host_sw = sv_sw;
     free(wh_want);
     wh_want = NULL;
+}
+
+// 1.8.31: vs_open (SettingsOpened alone deferred with defer 0) and kb_open_full (the keyboard-open request with a
+// whole-screen clean)
+static void test_v1831(void) {
+    const char *rc0 = host_rc;
+    int kbc0 = cfg.kb_clean;
+    double tq0 = cfg.tr_quiet;
+    host_rc = "ok";
+    sd("visibleChanged: false");
+    if (kb_on) { partial("ui ........", 0, 0, SW, SH); flush(); }
+    full();
+    elapse(5.0);
+    xo_state = 0;
+    cfg.defer = 0;
+    cfg.tr_quiet = 0.5;
+    ggq("qml", "GGQ 0 hb");
+    auto_req = 0;
+    CHECK(!tr_active && !kb_on && !kbo_req && !auto_req && !sd_visible && !promote_live, "V31 nothing waits");
+    printf("V31 vs_open: with defer 0 only SettingsOpened gets the cycle; one whole-screen clean after vs_quiet\n");
+    CHECK(cfg.vs_open == 0 && cfg.kb_open_full == 0 && cfg.vs_quiet > 0.19 && cfg.vs_quiet < 0.21, "both off by default");
+    unsigned long k0 = n_kick, tr0 = n_tr, c0 = cleans(), vs0 = n_vs;
+    vc("SettingsOpened");
+    CHECK(!tr_active && n_tr == tr0 && n_kick == k0, "vs_open 0, defer 0: no cycle (xochitl's own flash stays)");
+    full();
+    elapse(5.0);
+    ggq("qml", "GGQ 63 set vs_open 1");
+    ggq("qml", "GGQ 63 set vs_quiet 0.2");
+    CHECK(cfg.vs_open == 1 && cfg.vs_quiet > 0.19 && cfg.vs_quiet < 0.21, "set vs_open 1, vs_quiet 0.2");
+    const char *other[2] = {"SettingsClosed", "DocumentClosed"};
+    for (int i = 0; i < 2; i++) {
+        vc(other[i]);
+        CHECK(!tr_active && n_tr == tr0 && n_kick == k0, "%s: no cycle (defer 0 for it)", other[i]);
+        full();
+        elapse(5.0);
+    }
+    partial("ui ........", 0, 0, 414, 2160); // the side menu (journal 2026-11-12 18:40:39)
+    elapse(1.1);
+    vc("SettingsOpened");
+    CHECK(tr_active && tr_vs && n_tr == tr0 + 1 && n_kick == k0 + 1 && n_vs == vs0 + 1, "SettingsOpened: a cycle of vs_open, helper asked");
+    ggq("qml", "GGQ 0 settle");
+    CHECK(tr_active && cleans() == c0, "its page not drawn yet: waits");
+    partial("ui ........", 0, 0, 1620, 2160); // the Settings page, drawn by its own update
+    elapse(0.15);
+    ggq("qml", "GGQ 0 settle");
+    CHECK(tr_active && cleans() == c0, "0.15 s: not quiet yet");
+    elapse(0.1);
+    ggq("qml", "GGQ 0 settle");
+    CHECK(!tr_active && cleans() == c0 + 1 && host_last.x == 0 && host_last.y == 0 && host_last.w == SW && host_last.h == SH,
+          "0.25 s: one whole-screen clean in place (vs_quiet, not tr_quiet 0.5)");
+    printf("     SettingsClosed while it waits: the cycle ends, its own stock flash goes out, no clean after it\n");
+    elapse(5.0);
+    c0 = cleans();
+    unsigned long e0 = n_vs_end;
+    vc("SettingsOpened");
+    partial("ui ........", 0, 0, 1620, 2160);
+    vc("SettingsClosed");
+    CHECK(!tr_active && n_vs_end == e0 + 1, "cycle ended");
+    full();
+    elapse(2.0);
+    ggq("qml", "GGQ 0 settle");
+    CHECK(cleans() == c0, "no clean after the closing flash");
+    printf("     vs_open 0 while it waits ends it; defer 1 keeps the old cycle (tr_quiet) for every kind\n");
+    elapse(5.0);
+    vc("SettingsOpened");
+    CHECK(tr_active && tr_vs, "waits");
+    ggq("qml", "GGQ 63 set vs_open 0");
+    CHECK(!tr_active && cfg.vs_open == 0, "ended by vs_open 0");
+    full();
+    elapse(5.0);
+    ggq("qml", "GGQ 63 set vs_open 1");
+    ggq("qml", "GGQ 81 set defer 1");
+    c0 = cleans();
+    vc("SettingsClosed");
+    CHECK(tr_active && !tr_vs, "defer 1: SettingsClosed deferred as before (not a vs cycle)");
+    partial("ui ........", 0, 0, 1620, 2160);
+    elapse(0.3);
+    ggq("qml", "GGQ 0 settle");
+    CHECK(tr_active && cleans() == c0, "tr_quiet 0.5 for it: still waits at 0.3 s");
+    elapse(0.3);
+    ggq("qml", "GGQ 0 settle");
+    CHECK(!tr_active && cleans() == c0 + 1, "cleaned at 0.6 s");
+    ggq("qml", "GGQ 81 set defer 0");
+    pthread_mutex_lock(&mu);
+    write_status("v31", "");
+    pthread_mutex_unlock(&mu);
+    char *js = slurp(TESTRUN "/status.json");
+    CHECK(js && strstr(js, "\"defer\":0") && strstr(js, "\"vs\":[1,0.20,") && strstr(js, "\"kbFull\":0"), "status: %.60s",
+          js && strstr(js, "\"vs\"") ? strstr(js, "\"vs\"") : "(no vs)");
+    elapse(5.0);
+
+    printf("V32 kb_open_full: + menu, keyboard, cursor, quiet: ONE whole-screen clean; typing: none; close: its own\n");
+    cfg.kb_clean = 1;
+    ggq("qml", "GGQ 64 set kb_open_full 1");
+    CHECK(cfg.kb_open_full == 1 && cfg.kb_open_clean == 0, "kb_open_full on, kb_open_clean stays retired");
+    for (int pass = 0; pass < 2; pass++) {
+        const char *cls = pass ? "animation ." : "overlay ...";
+        c0 = cleans();
+        unsigned long kc0 = n_kbo_clean;
+        partial("ui ........", 581, 1448, 457, 468); // the + menu
+        elapse(2.09);
+        kb_frame(cls);
+        flush();
+        CHECK(kb_on && kbo_req, "[%s] armed at the opening frame", cls);
+        elapse(0.25);
+        ggq("qml", "GGQ 0 settle");
+        CHECK(kbo_req && cleans() == c0, "[%s] 0.25 s: not quiet yet (kbo_quiet 0.4)", cls);
+        partial("ui ........", 51, 254, 1, 42); // the text cursor
+        flush();
+        elapse(0.25);
+        ggq("qml", "GGQ 0 settle");
+        CHECK(!kbo_req && cleans() == c0 + 1 && n_kbo_clean == kc0 + 1 && host_last.x == 0 && host_last.y == 0 &&
+                  host_last.w == SW && host_last.h == SH && kb_on,
+              "[%s] 0.5 s: one whole-screen STD in place, keyboard still tracked", cls);
+        for (int i = 0; i < 4; i++) {
+            key_press("overlay ...: QRegion(668,1641 139x118)");
+            elapse(0.3);
+            ggq("qml", "GGQ 0 settle");
+        }
+        CHECK(cleans() == c0 + 1, "[%s] typing: no clean", cls);
+        partial("ui ........", 0, 0, SW, SH); // Cancel
+        flush();
+        elapse(0.6);
+        ggq("qml", "GGQ 0 settle");
+        CHECK(!kb_on && cleans() == c0 + 2, "[%s] closed: the keyboard's own full clean as before", cls);
+        elapse(5.0);
+    }
+    printf("     a key first, or the pen near: no clean; off again: the stock keyboard\n");
+    c0 = cleans();
+    kb_frame("overlay ...");
+    flush();
+    elapse(0.3);
+    key_press("overlay ...: QRegion(668,1641 139x118)");
+    ggq("qml", "GGQ 0 settle");
+    elapse(0.6);
+    ggq("qml", "GGQ 0 settle");
+    CHECK(!kbo_req && cleans() == c0, "a key first: dropped, no clean");
+    partial("ui ........", 0, 0, SW, SH);
+    flush();
+    elapse(0.6);
+    ggq("qml", "GGQ 0 settle");
+    elapse(5.0);
+    c0 = cleans();
+    kb_frame("overlay ...");
+    flush();
+    elapse(0.5);
+    ggq("qml", "GGQ 0 settle pen");
+    CHECK(!kbo_req && cleans() == c0, "the pen near: dropped, no clean");
+    partial("ui ........", 0, 0, SW, SH);
+    flush();
+    elapse(0.6);
+    ggq("qml", "GGQ 0 settle");
+    elapse(5.0);
+    ggq("qml", "GGQ 64 set kb_open_full 0");
+    c0 = cleans();
+    kb_frame("overlay ...");
+    flush();
+    CHECK(kb_on && !kbo_req, "kb_open_full 0: no request");
+    elapse(0.5);
+    ggq("qml", "GGQ 0 settle");
+    CHECK(cleans() == c0, "no clean while it is up");
+    partial("ui ........", 0, 0, SW, SH);
+    flush();
+    elapse(0.6);
+    ggq("qml", "GGQ 0 settle");
+    elapse(5.0);
+    ggq("qml", "GGQ 63 set vs_open 0");
+    cfg.kb_clean = kbc0;
+    cfg.tr_quiet = tq0;
+    host_rc = rc0;
+}
+
+// 1.8.32: vs_open as a bit mask, SettingsClosed too (user photo IMG_1804)
+static void test_v1832(void) {
+    const char *rc0 = host_rc;
+    host_rc = "ok";
+    sd("visibleChanged: false");
+    if (kb_on) { partial("ui ........", 0, 0, SW, SH); flush(); }
+    full();
+    elapse(5.0);
+    xo_state = 0;
+    cfg.defer = 0;
+    ggq("qml", "GGQ 0 hb");
+    auto_req = 0;
+    printf("V33 vs_open 3: SettingsClosed gets the cycle too; other kinds keep defer 0\n");
+    ggq("qml", "GGQ 63 set vs_open 9");
+    CHECK(cfg.vs_open == 3, "set vs_open 9: clamped to 3 (%d)", cfg.vs_open);
+    unsigned long k0 = n_kick, c0 = cleans();
+    vc("DocumentClosed");
+    CHECK(!tr_active && n_kick == k0, "another kind: no cycle");
+    full();
+    elapse(5.0);
+    vc("SettingsClosed");
+    CHECK(tr_active && tr_vs && n_kick == k0 + 1, "SettingsClosed: a cycle of vs_open, helper asked");
+    ggq("qml", "GGQ 0 settle");
+    CHECK(tr_active && cleans() == c0, "the library not drawn yet: waits");
+    partial("ui ........", 0, 0, 1620, 2160); // the library, drawn by its own update
+    elapse(0.25);
+    ggq("qml", "GGQ 0 settle");
+    CHECK(!tr_active && cleans() == c0 + 1 && host_last.x == 0 && host_last.y == 0 && host_last.w == SW && host_last.h == SH,
+          "0.25 s: one whole-screen clean in place");
+    printf("     opened, then closed before the clean: one cycle, one clean for both\n");
+    elapse(5.0);
+    c0 = cleans();
+    unsigned long e0 = n_vs_end;
+    vc("SettingsOpened");
+    partial("ui ........", 0, 0, 1620, 2160);
+    vc("SettingsClosed");
+    CHECK(tr_active && tr_vs && n_vs_end == e0, "joined, not ended");
+    ggq("qml", "GGQ 0 settle");
+    CHECK(tr_active && cleans() == c0, "waits for the closing view's first frame");
+    partial("ui ........", 0, 0, 1620, 2160);
+    elapse(0.25);
+    ggq("qml", "GGQ 0 settle");
+    CHECK(!tr_active && cleans() == c0 + 1, "one clean for both");
+    pthread_mutex_lock(&mu);
+    write_status("v32", "");
+    pthread_mutex_unlock(&mu);
+    char *js = slurp(TESTRUN "/status.json");
+    CHECK(js && strstr(js, "\"vs\":[3,0.20,"), "status: %.24s", js && strstr(js, "\"vs\"") ? strstr(js, "\"vs\"") : "(no vs)");
+    printf("     vs_open 1: SettingsClosed back to xochitl's own flash; 2: SettingsOpened too\n");
+    elapse(5.0);
+    ggq("qml", "GGQ 63 set vs_open 1");
+    k0 = n_kick;
+    vc("SettingsClosed");
+    CHECK(!tr_active && n_kick == k0 && cfg.vs_open == 1, "vs_open 1: SettingsClosed no cycle");
+    full();
+    elapse(5.0);
+    ggq("qml", "GGQ 63 set vs_open 2");
+    vc("SettingsOpened");
+    CHECK(!tr_active && n_kick == k0 && cfg.vs_open == 2, "vs_open 2: SettingsOpened no cycle");
+    full();
+    elapse(5.0);
+    ggq("qml", "GGQ 63 set vs_open 0");
+    host_rc = rc0;
 }
 
 int main(void) {
@@ -5216,6 +5451,8 @@ int main(void) {
     test_turn_full();
     test_second_pass();
     test_white_turn();
+    test_v1831();
+    test_v1832();
     cfg.debug = 0;
     cfg.tr_pad = 16;
     cfg.cell_min = 6;

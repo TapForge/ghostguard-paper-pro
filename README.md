@@ -9,8 +9,10 @@ tablet drives its screen during page turns, so that the new page arrives clean:
 | Situation | Stock software | With GhostGuard |
 |---|---|---|
 | Page turn on a colour page | fast partial update, the old page shows through | **one** full refresh (about 1 s), corrected so that the old text does not stay behind |
-| Page turn on a black-and-white page | fast partial update, a faint trace | still **no flash**; the trace is reduced by a compensating drive |
-| Closing a document, Settings, keyboard closing | a flash that leaves residue | one clean refresh after the screen has settled |
+| Page turn on a black-and-white page | fast partial update, a faint trace | with the start-up extra `bwturn` (installed by default): the turn of a colour page, **one** full refresh with no visible trace. Without it: no flash, and a trace reduced by a compensating drive |
+| Closing a document | a flash that leaves residue | one full refresh at the moment of the change, with the white tail; no ghost phase, no late flash (extra `viewchange`). Without it: the new view first, one clean in-place refresh 0.6-0.9 s later |
+| Opening and closing Settings | a flash that leaves residue | one clean in-place refresh about half a second after the change, on the finished view (extra `settingskb`) |
+| On-screen keyboard | closing: a flash that leaves residue | opening: one clean in-place refresh about 0.5 s later, before the first key (extra `settingskb`); closing: one clean refresh after the screen has settled |
 | Menus, pop-ups, typing, handwriting | – | unchanged, no added flash |
 
 It is free, open source, and can be removed with one command.
@@ -52,6 +54,7 @@ you copy and paste three commands. The full guide with every screen and every qu
    ```
 
    The installer explains each step and asks before it changes anything. It asks for the password from step 2 once.
+   It installs the four [start-up extras](#start-up-extras) by default; `GG_EXTRAS=none bash install.sh` installs none.
 5. **Let it restart the tablet**, then leave the tablet awake and untouched for about four minutes. The screen
    restarts once by itself; after that GhostGuard is running. Check with `bash status.sh`.
 
@@ -60,7 +63,8 @@ To remove it: `bash uninstall.sh --now`.
 ## How do I know it works?
 
 Open a PDF with colour (a textbook, a magazine) and turn a few pages. Each turn away from a colour page is now one
-short full refresh, and the page behind it should be gone. In a black-and-white book, page turns stay flash-free.
+short full refresh, and the page behind it should be gone. With the default extras a black-and-white page turns the same way; without the `bwturn` extra it stays flash-free.
+The document toolbar also gets a refresh button (see [Start-up extras](#start-up-extras)).
 `bash status.sh` on the computer prints `RESULT: GhostGuard is running.`
 
 ## What causes the ghosting?
@@ -81,13 +85,47 @@ Short version of what we measured ([docs/HOW-IT-WORKS.md](docs/HOW-IT-WORKS.md) 
 - **Colour pages:** the turn is sent as one full refresh, and the tablet's waveform table (in memory only) gets a
   short "white tail": seven otherwise idle frames at −12 V on the 43 ink-to-white transitions. That pushes the
   leftover of the old text to white inside the same refresh, so no second pass is needed.
-- **Black-and-white pages:** the turn stays flash-free. Held pixels get a small compensating voltage, and the
+- **Black-and-white pages:** with the `bwturn` extra they turn like colour pages (one full refresh with the white
+  tail). Without it the turn stays flash-free: held pixels get a small compensating voltage, and the
   white-to-white flips are parked at 0 V for the length of the turn.
-- **View changes:** the stock flash is withdrawn and one clean in-place refresh follows when the screen is still.
+- **View changes:** with the `viewchange` extra xochitl's own full refresh stays at the moment of the change.
+  Without it the stock flash is withdrawn and one clean in-place refresh follows when the screen is still.
+  For Settings (opening and closing) and for the keyboard opening, the `settingskb` extra brings back the
+  deferred cycle: one whole-screen in-place clean once the new view is finished.
+
+The engine is ggsense 1.8.32. Four small start-up extras switch these behaviours on; see
+[Start-up extras](#start-up-extras).
 
 We tried about twenty other approaches first: cleaning after every page, cleaning every N pages, flash-free
 compensation for colour pages, two refreshes per turn, a white screen in between, and more. Each one is listed in
 **[docs/WHAT-WE-TRIED.md](docs/WHAT-WE-TRIED.md)** with the reason it was dropped.
+
+## Start-up extras
+
+A start-up extra is a small JavaScript file `tools/<name>.js` that GhostGuard sends to the tablet's interface after
+every start of `xochitl`, as the last step of `deploy/boot/ggapply.sh`, after the clock and its status check, in a
+fixed order. `install.sh` installs all four by default. The start's result line names them, for example
+`ACTIVE: ggsense 1.8.32 in xochitl 1554, defer 1, triggers on; keyboard watcher on; splash cleaned; extras: bwturn on, ggrefresh on, viewchange on, settingskb on`.
+An extra that is not confirmed does not stop GhostGuard; the line then says `<name> not confirmed`.
+
+| Extra | What it does | Undo now (until the next restart) |
+|---|---|---|
+| `bwturn` | Black-and-white and grey pages turn like colour pages: one full refresh with the white tail. A blank page still turns without a flash. | `bash settings.sh tf_chroma 25` |
+| `ggrefresh` | A refresh button in the document toolbar, right below undo/redo. A tap is one full in-place refresh of the screen (at most one every 2.5 s, not while the tablet sleeps). It moves and hides with the toolbar. It is made again after every start of `xochitl`, so it appears only once GhostGuard has started (a few minutes after a boot). | `python3 -I tools/ggq.py tools/ggrefresh.js --sub GGRCMD=kill` |
+| `viewchange` | Sets `defer 0`: at a view change xochitl's own full refresh stays, so the new view's first frame is one full refresh. | `bash settings.sh defer 1` |
+| `settingskb` | One clean in-place refresh about half a second after Settings opens or closes, and after the on-screen keyboard opens (needs ggsense 1.8.31 or later). | `bash settings.sh vs_open 0` and `bash settings.sh kb_open_full 0` |
+
+Settings sent by extras live in the engine's memory only and are sent again at every start. To change one for good,
+install again with another set:
+
+```bash
+GG_EXTRAS="bwturn ggrefresh" bash install.sh
+```
+
+installs only the named extras (always in the fixed order), and `GG_EXTRAS=none bash install.sh` installs none. Then
+restart the tablet. With no extras the behaviour is that of ggsense 1.8.30: black-and-white pages flash-free, and
+view changes "new view first, one in-place clean 0.6-0.9 s later". Details: [docs/INSTALL.md](docs/INSTALL.md) and
+[docs/SETTINGS.md](docs/SETTINGS.md).
 
 ## Risks
 
@@ -143,11 +181,12 @@ Run these on the computer, with the tablet connected by USB and awake.
 
 ```
 install.sh, uninstall.sh, status.sh, settings.sh   the four commands for users
-prebuilt/ggsense.so     the engine, built from ggsense/ggsense-1.8.30.c (aarch64)
+prebuilt/ggsense.so     the engine, built from ggsense/ggsense-1.8.32.c (aarch64)
 ggsense/                engine source, unit tests, fuzz test, build script
 ghostguard/             the small QML part that runs inside the tablet's interface
 deploy/                 the boot-time installer, guards, rescue and rollback scripts
-tools/                  helper programs (input watcher, table tool, command sender)
+tools/                  helper programs (input watcher, table tool, command sender) and the start-up extras:
+                        bwturn.js, ggrefresh.js, viewchange.js, settingskb.js (plus the clock and keyboard watcher)
 docs/                   the documents above
 ```
 

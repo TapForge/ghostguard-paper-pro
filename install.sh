@@ -15,6 +15,10 @@
 #
 # Options:  GG_HOST=name-or-address bash install.sh    use another SSH host than "remarkable" / root@10.11.99.1
 #           bash install.sh --yes                      answer yes to every question (for people who read the script)
+#           GG_EXTRAS="bwturn ggrefresh" bash install.sh
+#                                                      install only these start-up extras (default: all four,
+#                                                      "bwturn ggrefresh viewchange settingskb"; GG_EXTRAS=none: none;
+#                                                      README, "Start-up extras")
 set -eu
 HERE=$(cd "$(dirname "$0")" && pwd)
 OS_TESTED=20261028104944
@@ -35,13 +39,27 @@ ask()  { # ask "question": returns 0 on yes
 }
 sha256q() { if command -v shasum > /dev/null 2>&1; then shasum -a 256 "$1" | cut -d' ' -f1; else sha256sum "$1" | cut -d' ' -f1; fi; }
 
+# the start-up extras (tools/<name>.js), always installed in this order
+ALL_EXTRAS="bwturn ggrefresh viewchange settingskb"
+WANT=${GG_EXTRAS-$ALL_EXTRAS}
+[ "$WANT" = none ] && WANT=""
+for e in $WANT; do
+    case " $ALL_EXTRAS " in *" $e "*) ;; *) die "GG_EXTRAS: unknown extra '$e' (known: $ALL_EXTRAS, or none)" ;; esac
+done
+XARGS=()
+CHOSEN=""
+for e in $ALL_EXTRAS; do
+    case " $WANT " in *" $e "*) XARGS+=(--extra "$HERE/tools/$e.js"); CHOSEN="$CHOSEN $e" ;; esac
+done
+
 say "1/6 Tools on this computer"
 for t in ssh scp python3 file sed grep curl tar; do
     command -v "$t" > /dev/null 2>&1 || die "'$t' is not installed on this computer. See docs/INSTALL.md, 'What you need'."
 done
 command -v md5 > /dev/null 2>&1 || command -v md5sum > /dev/null 2>&1 || die "neither 'md5' nor 'md5sum' found"
 for f in prebuilt/ggsense.so tools/ggtool tools/clock14f.js ghostguard/ghostguard.qmd ghostguard/control.json \
-         deploy/20-gglog.conf deploy/persist_install.sh; do
+         deploy/20-gglog.conf deploy/persist_install.sh tools/bwturn.js tools/ggrefresh.js tools/viewchange.js \
+         tools/settingskb.js; do
     [ -f "$HERE/$f" ] || die "the file $f is missing: download the whole project again"
 done
 echo "ok"
@@ -124,6 +142,7 @@ fi
 say "5/6 Installing GhostGuard"
 echo "This copies GhostGuard to /home/root/ghostguard and /home/root/xovi on the tablet and adds three small"
 echo "start-up units so that it starts by itself about three minutes after every boot (see README, 'Risks')."
+echo "Start-up extras:${CHOSEN:- none} (README, 'Start-up extras'; choose others with GG_EXTRAS)"
 ask "Install GhostGuard now?" || die "not installed (nothing was changed in this step)"
 r 'mkdir -p /home/root/ghostguard /home/root/xovi/exthome/qt-resource-rebuilder /home/root/xovi/services/xochitl.service'
 scp $B -q "$HERE/ghostguard/ghostguard.qmd" "$HOST:/home/root/xovi/exthome/qt-resource-rebuilder/ghostguard.qmd"
@@ -134,7 +153,7 @@ else
     scp $B -q "$HERE/ghostguard/control.json" "$HOST:/home/root/ghostguard/control.json"
 fi
 GG_HOST="$HOST" bash "$HERE/deploy/persist_install.sh" --go --so "$HERE/prebuilt/ggsense.so" \
-    --clock "$HERE/tools/clock14f.js" > "$HERE/install.log" 2>&1 || {
+    --clock "$HERE/tools/clock14f.js" ${XARGS[@]+"${XARGS[@]}"} > "$HERE/install.log" 2>&1 || {
         tail -n 15 "$HERE/install.log"; die "the installer step failed; the full output is in install.log"; }
 grep -q '^== done' "$HERE/install.log" || { tail -n 15 "$HERE/install.log"; die "the installer step did not finish; see install.log"; }
 echo "ok: GhostGuard is installed and armed for the next boot (details in install.log)"

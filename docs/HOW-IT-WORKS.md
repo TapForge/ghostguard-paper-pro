@@ -1,6 +1,6 @@
 # How it works
 
-This document explains what causes ghosting on the reMarkable Paper Pro, what we measured, and what the fix (ggsense 1.8.30) does. It also lists what we did not verify.
+This document explains what causes ghosting on the reMarkable Paper Pro, what we measured, and what the fix (ggsense 1.8.32) does. It also lists what we did not verify.
 
 Short version: the panel's shared electrode drifts with the average voltage of each refresh. Pixels that are not driven pick up that drift, and pixels that are driven from old text to white keep a faint trace. ggsense changes how page turns are driven so that both effects get smaller.
 
@@ -91,11 +91,15 @@ ggsense is a shared library loaded into xochitl at start-up through XOVI. It doe
 
 Small additional parts are a QML clock that runs inside the UI and tells the library when the screen has settled, and a watchdog that unloads the library if xochitl crashes after install.
 
-## 7. The chosen behaviour (version 1.8.30)
+## 7. The chosen behaviour (version 1.8.32 with the start-up extras)
 
-### 7.1 Black-and-white and sparse-colour pages: flash-free
+The engine alone behaves like 1.8.30. Four small start-up extras (`tools/*.js`, sent after every start of xochitl; see the README, "Start-up extras") change some of its settings and add a button. This section says what happens with all four installed and what happens without them.
 
-These page turns get **no flash**. The library uses co-drive:
+### 7.1 Black-and-white and sparse-colour pages
+
+With the `bwturn` extra (`set tf_chroma 0`) these pages turn the way colour pages do: one full refresh with the white tail (7.2), with no visible trace. A blank page still turns without a flash. The owner asked for this and kept it.
+
+Without the extra (the build's default, `tf_chroma 25`), these page turns get **no flash**. The library uses co-drive:
 
 - Cells of the waveform for held pixels get a small voltage that cancels `m(t)`.
 - The 28-to-30 and 30-to-28 flip rows are held at 0 V for the length of the turn, so the white-to-white flips stop making drift. They are put back to stock about 6 seconds after the last turn, and at once before any full refresh.
@@ -111,13 +115,24 @@ To get rid of the faint trace, ggsense has changed the STD table in RAM. In the 
 
 It is written once per table, when the library first sees an STD update. It is not written to any other table.
 
-### 7.3 View changes: one in-place clean
+### 7.3 View changes
 
-At view changes (closing a document, opening or closing Settings, the keyboard closing, the page overview) the stock firmware flashes while changing content. ggsense withdraws that flash. Once the screen has settled, it does **one** full-screen in-place refresh instead. This version erases the trace.
+At view changes (closing a document, opening or closing Settings, the keyboard, the page overview) the stock firmware flashes while changing content. A refresh that changes content does not erase the old content, so the old view can leave a trace.
+
+- **Without the extras (`defer 1`, set by the clock).** ggsense withdraws that flash, the new view is drawn over the old one (a visible ghost), and **one** full-screen in-place refresh follows 0.6-0.9 s later. That refresh erases the trace. The owner found "ghost first, then a hard flash" after closing a document worse than the alternative below.
+- **With the `viewchange` extra (`defer 0`).** xochitl's own full refresh stays at the moment of the change, so the first frame of the new view goes out as one full refresh. A full refresh that changes the content can keep a faint trace of the old view. For Settings it did: the library's side menu stayed visible behind the Settings page, and closing Settings left the whole Settings page as a heavy ghost on the library.
+- **With the `settingskb` extra (ggsense 1.8.31 or later).** `vs_open` is a bit mask (1 = opening Settings, 2 = closing it, 3 = both). For these view changes the deferred cycle comes back even with `defer 0`: xochitl's refresh is withdrawn, the new view is drawn by its own update, and one whole-screen in-place clean follows once nothing has changed for `vs_quiet` seconds (logged 0.41-0.52 s after the change). It is still one flash, only later and on the finished view, so it erases the trace. If Settings is closed before the opening clean ran, one clean serves both. Every other view change keeps `defer 0`.
+- **Keyboard.** When the on-screen keyboard opened over a menu, the menu stayed visible inside the keyboard. With `kb_open_full 1` (also from `settingskb`), the opening gets one whole-screen in-place clean about 0.5 s later (logged 0.43-0.71 s), before the first key. It never runs while typing or with the pen near, and a key press drops it. The clean when the keyboard closes is unchanged.
+
+Only an in-place full refresh erases a trace; the flash-free ways we tried earlier left traces.
+
+### 7.3a The refresh button
+
+The `ggrefresh` extra adds a button to the document toolbar, right below undo/redo, with the interface's own counter-clockwise-arrows icon. A tap is one full in-place refresh of the screen (at most one every 2.5 s, not while the tablet sleeps). It is a pure QtQuick overlay: none of xochitl's own items is changed. It moves and hides with the toolbar and is made again after every start of xochitl.
 
 ### 7.4 No extra flash for menus, popups, typing, writing
 
-ggsense does not add any flash for menus, popups, typing or writing. It also never cleans while the pen is near or the on-screen keyboard is up.
+ggsense does not add any flash for menus, popups, typing or writing. It never cleans while the pen is near or while you type: at the on-screen keyboard the only cleans are the ones in 7.3 (when it opens, before the first key, and when it closes).
 
 ## 8. The STD table format, as found
 

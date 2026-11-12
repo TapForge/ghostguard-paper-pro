@@ -33,8 +33,10 @@ Notes:
 Install your own build with `bash install.sh` (it takes `prebuilt/ggsense.so`), or directly:
 
 ```bash
-bash deploy/persist_install.sh --go --so prebuilt/ggsense.so --clock tools/clock14f.js
+bash deploy/persist_install.sh --go --so prebuilt/ggsense.so --clock tools/clock14f.js --extra tools/bwturn.js --extra tools/ggrefresh.js --extra tools/viewchange.js --extra tools/settingskb.js
 ```
+
+Leave out the `--extra` options for no start-up extras, or give only the ones you want.
 
 The boot scripts pin the checksum of the library they were installed with; a library copied over it by hand is
 refused at the next boot. Always go through the installer.
@@ -43,9 +45,10 @@ refused at the next boot. Always go through the installer.
 
 | Piece | Role |
 |---|---|
-| `ggsense/ggsense-1.8.30.c` | The engine: one C file, loaded into `xochitl` with `LD_PRELOAD` through XOVI's service drop-in. Its header comment (about 400 lines) is the design history and the list of runtime keys. |
+| `ggsense/ggsense-1.8.32.c` | The engine: one C file, loaded into `xochitl` with `LD_PRELOAD` through XOVI's service drop-in. Its header comment (about 400 lines) is the design history and the list of runtime keys. |
 | `ghostguard/ghostguard.qmd` | A qt-resource-rebuilder patch: adds a small QML object to the interface that reads `/home/root/ghostguard/control.json` every 3 s and evaluates the command in it. This is the command channel (`tools/ggq.py`). |
 | `tools/clock14f.js`, `tools/kbd_overlay.js` | QML snippets sent at start: a clock that tells the engine when the screen has settled, and a watcher for the on-screen keyboard. |
+| `tools/bwturn.js`, `tools/ggrefresh.js`, `tools/viewchange.js`, `tools/settingskb.js` | The start-up extras: small JavaScript files sent after every start of `xochitl`, as the last step of `deploy/boot/ggapply.sh`. `deploy/boot/mkpayload.py` turns each into `payload/xNN-<name>.cmd` and `.ok`. `bwturn`, `viewchange` and `settingskb` send engine settings; `ggrefresh` adds the refresh button. |
 | `deploy/boot/autostart.sh` | Runs 70 s after boot from a systemd timer: checks everything (the "gates"), waits for 120 s without input, starts XOVI, checks health, starts the crash guard. |
 | `deploy/boot/rescue.sh`, `deploy/gg_autorollback.sh` | The way back to stock when the interface fails to start or crashes during the first 15 minutes. |
 | `deploy/boot/gg.sh` | `status`, `disable`, `enable`, `stock`, `gates`, `log` on the tablet. |

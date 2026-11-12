@@ -10,6 +10,9 @@
 #   4. splash  one in-place clean of the whole screen (the restart's splash), only when the pen and touch input
 #              could be watched and nobody touched the screen for 3 s; ggsense's own answer is read from status.json
 #              ("q":"95", "rc"): busy / notready / pending (nothing was cleaned) get one more try 2 s later
+#   5. extras  optional: every payload/xNN-<name>.cmd (+ .ok), in name order, e.g. a setting on top of the clock's or
+#              a QML item of its own (persist_install.sh --extra FILE). Sent only after 1-4, each up to twice; an
+#              extra that is not confirmed does not change the verdict, the result line names it
 # Each command is confirmed by its result in xochitl's journal ("XOVI-GG71 EVAL [<js>] => <result>"). kbd, clock
 # and status are sent once more (new id) when no result comes (they are idempotent); the splash never twice.
 # Only the "cmd" line of control.json is rewritten (new file + rename, like tools/ggctl.py), the settings stay; it
@@ -237,4 +240,19 @@ if [ "$SPLASH" = 1 ]; then
         *) sp="skipped (the pen and touch input cannot be watched)" ;;
     esac
 fi
-finish 0 "ACTIVE: $VER in xochitl $pid, defer 1, triggers on; keyboard watcher $kb; splash $sp"
+
+# 5. the optional extras, in name order (none installed: nothing happens here and the result line is the old one).
+# ggsense is active by now whatever they do: an extra without a confirmed result is only named in the result line
+ex=""
+for f in "$PL"/x[0-9][0-9]-*.cmd; do
+    [ -s "$f" ] || continue
+    n=${f##*/}
+    n=${n%.cmd}
+    short=${n#x[0-9][0-9]-}
+    if [ ! -s "$PL/$n.ok" ]; then ex="$ex, $short has no result text"; continue; fi
+    send "$n" 2
+    rc=$?
+    [ "$rc" = 3 ] && finish 1 "FAILED: xochitl $pid ended while the extra $short was sent"
+    if [ "$rc" = 0 ]; then ex="$ex, $short on"; else ex="$ex, $short not confirmed"; fi
+done
+finish 0 "ACTIVE: $VER in xochitl $pid, defer 1, triggers on; keyboard watcher $kb; splash $sp${ex:+; extras: ${ex#, }}"

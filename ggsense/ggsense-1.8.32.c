@@ -366,6 +366,27 @@
 // page with enough coloured ink is a colour page, and a colour scan of yellowed paper may be one. Measured at 26 C
 // only: nothing here was tried at 28 C or more.
 //
+// 1.8.32, Settings closed too (2026-11-12). With vs_open 1 the Settings page opened clean, but closing it (defer 0:
+// xochitl's own content-changing STD at SettingsClosed) left the whole Settings page as a heavy ghost on the library
+// (user photo IMG_1804). vs_open is a bit mask now: 1 = SettingsOpened, 2 = SettingsClosed (3 = both; the boot extra
+// x04 sends 3). A SettingsClosed that comes while the SettingsOpened cycle still waits joins it: one clean for both
+// (it waits for the closing view's first frame, as the 1.5 cycle always did). Every other view change keeps defer 0.
+//
+// 1.8.31, two places only (2026-11-12). With defer 0 (boot extra x03: xochitl's own full refresh at a view change, no
+// in-place clean after it) the user saw the library's side menu stay behind the Settings page (IMG_1800): the menu is
+// drawn by a partial update ~1.1 s before SettingsOpened, and the stock STD that changes the content carries the trace
+// of those pixels into the new page (an STD that changes the content leaves the old image behind; one in place erases
+// it). vs_open 1 gives SettingsOpened alone the 1.5 cycle again (its stock flash withdrawn, the page drawn by its own
+// update, then ONE whole-screen STD in place once nothing changed for vs_quiet s); every other view change (document
+// close, SettingsClosed, ...) keeps defer 0. Another view change while such a cycle waits ends it: its own stock flash
+// goes over the whole screen. And the "+" menu stayed visible inside the on-screen keyboard (IMG_1801): dialog and
+// keyboard come in one frame ~2 s after the menu, the band is drawn with the fast Overlay waveform and the menu's dark
+// pixels are barely driven. kb_open_full 1 arms the 1.8.1 keyboard-open request again (same rules: an opening frame
+// only, only the text cursor may come first, never with the pen near, dropped at the first key), but its clean covers
+// the WHOLE screen: a whole-screen STD covers every pixel of the dialog's in-flight update (rule K1 is about cleans of
+// less than the screen; the keyboard-close clean has gone out 0.25 s after a frame with the panel busy since 1.8).
+// Both default 0; the boot extra x04 turns them on.
+//
 // 1.8.30, the white tail for good (2026-11-12). The user's eye on the white intermediate: it cleans, but not that way.
 // Their wish: fast, no trace, no hard flash. Tried by hand on 1.8.29 and taken by their eye ("great"): the turn
 // away from a page with colour as ONE full STD (turn_full 1, the default now), with the white tail of 1.8.23 (-12 V in
@@ -430,7 +451,7 @@
 #include <sys/uio.h>
 #endif
 
-#define GG_VERSION "ggsense 1.8.30"
+#define GG_VERSION "ggsense 1.8.32"
 #ifndef RUNDIR
 #define RUNDIR "/run/ghostguard"
 #endif
@@ -505,6 +526,10 @@ typedef struct {
     // 1.8.1 (see the header)
     int kb_open_clean;  // the keyboard band once, right after the keyboard was drawn, before the first key press
     double kbo_quiet;   // s without other updates (minor ones aside) after the keyboard frame before that clean
+    // 1.8.31 (see the header)
+    int vs_open;        // deferred even with defer 0: a bit mask (1.8.32), 1 = SettingsOpened, 2 = SettingsClosed
+    double vs_quiet;    // s without other updates before that cycle's clean (the others: tr_quiet)
+    int kb_open_full;   // the keyboard-open request (1.8.1 rules) with a whole-screen clean
     // 1.8.5 (see the header): reading comes first
     int page_gap;       // page changes since a full refresh before a page clean may come (1: after any change)
     int page_px;        // ghost samples (model) from which a counted page change cleans
@@ -562,6 +587,7 @@ static Config cfg = {
     .stock_gap = 3.0,
     .kb_open_clean = 0,
     .kbo_quiet = 0.4,
+    .vs_open = 0, .vs_quiet = 0.2, .kb_open_full = 0, // 1.8.31
     .page_gap = 1, // 1.8.6
     .page_px = 80000,
     .page_every = 6,
@@ -661,6 +687,9 @@ static double proc_ms_total, proc_ms_max;
 
 // view changes whose stock flash was moved to after the screen settled (see deferred_clean)
 static int tr_active;      // a view change waits for its in-place clean
+static int tr_vs;          // 1.8.31: the waiting cycle is a SettingsOpened one of vs_open (defer 0)
+static int wd_vs;          // 1.8.31: the helper's request is for such a cycle (read by the helper thread)
+static unsigned long n_vs, n_vs_end; // 1.8.31: such cycles; ended by another view change
 static double tr_t0;       // when it was announced
 static Rect tr_box;        // everything updated on screen since then
 static int tr_withdrawn;   // its stock flash was withdrawn in time
@@ -1198,7 +1227,7 @@ static void kb_track(void) {
         // the first key, 2026-11-09 09:23:32.011). kb_on can be cleared under a keyboard that stays up (sleep frame,
         // wake STD, a stock full refresh); such a redraw while typing must never arm a clean.
         int opening = rects_area(pend_cls_rects[CL_UI], pend_cls_n[CL_UI]) >= (long long)SW * SH / 8;
-        if (!was_on && cfg.kb_open_clean && !sleeping && opening) {
+        if (!was_on && (cfg.kb_open_clean || cfg.kb_open_full) && !sleeping && opening) { // 1.8.31: kb_open_full
             kbo_req = 1;
             kbo_t = pend_t;
             kbo_box = bb;
@@ -1922,7 +1951,7 @@ static void write_status(const char *qid, const char *rc) {
                      "\"v18\":{\"on\":[%d,%d,%d,%d],\"sd\":[%d,%d,%d,%d],\"sleeping\":%d,\"kb\":%d,\"kind\":\"%s\","
                      "\"sdClose\":%lu,\"sdSkip\":%lu,\"sleepBack\":%lu,\"sleepFrames\":%lu,\"wake\":%lu,"
                      "\"arm\":[%lu,%lu,%lu,%lu],\"drop\":[%lu,%lu,%lu],\"promote\":[%lu,%lu,%lu],\"popup\":%lu,\"minorUpd\":%lu,\"pen\":%d,"
-                     "\"gmin\":%.3f},\"kbOpen\":[%d,%lu,%lu,%lu,%lu,%d],"
+                     "\"gmin\":%.3f},\"kbOpen\":[%d,%lu,%lu,%lu,%lu,%d],\"vs\":[%d,%.2f,%lu,%lu],\"kbFull\":%d,"
                      "\"sw\":{\"now\":%d,\"last\":%d,\"inflight\":%lu,\"upgrade\":%lu,\"fullBusy\":%lu,\"waiting\":%.2f},\"temp\":%s,"
                      "\"page\":[%d,%d,%d,%d,%lu,%lu,%lu,%d,%d],"
                      "\"cd\":[%d,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%d,%.4f,%.4f,%lu,%lu,%lu],"
@@ -1945,6 +1974,7 @@ static void write_status(const char *qid, const char *rc) {
                      n_sleep_frame, n_wake, n_arm[AK_PAGE], n_arm[AK_GESTURE], n_arm[AK_KB], n_arm[AK_QML], n_auto_stock,
                      n_auto_ink, n_auto_covered, n_promote, n_promote_skip, n_unpromote, n_popup, n_minor_upd, sd_pen, cfg.gesture_min,
                      cfg.kb_open_clean, n_kbo, n_kbo_clean, n_kbo_drop, n_kbo_fail, kbo_req,
+                     cfg.vs_open, cfg.vs_quiet, n_vs, n_vs_end, cfg.kb_open_full,
                      swtcon_idle(), __atomic_load_n(&last_sw, __ATOMIC_RELAXED), n_inflight, n_upgrade, n_full_busy,
                      tr_active && tr_wait_t > 0 ? now - tr_wait_t : 0.0, tbuf,
                      n_pchg, cfg.page_gap, cfg.page_every, cfg.page_px, n_page_wait, n_page_flip, n_page_none,
@@ -1983,7 +2013,20 @@ static void set_defer(int on) {
     if (!tr_active) return;
     int back = tr_withdrawn && t_last_update <= tr_vc_last ? restore_pending() : 0;
     tr_active = 0;
+    tr_vs = 0;
     glog("defer %d during view change %s: cycle ended%s", on, tr_what, back > 0 ? ", stock flash given back" : "");
+}
+
+// 1.8.31: vs_open turned off while a SettingsOpened cycle of its own waits ends it, as set_defer does
+static void set_vs_open(int on) {
+    on = on < 0 ? 0 : on > 3 ? 3 : on; // 1.8.32: a bit mask
+    if (on == cfg.vs_open) return;
+    cfg.vs_open = on;
+    if (on || !tr_active || !tr_vs) return;
+    int back = tr_withdrawn && t_last_update <= tr_vc_last ? restore_pending() : 0;
+    tr_active = 0;
+    tr_vs = 0;
+    glog("vs_open 0 during view change %s: cycle ended%s", tr_what, back > 0 ? ", stock flash given back" : "");
 }
 
 static int clamp_i(double d, int lo, int hi) { return d < lo ? lo : d > hi ? hi : (int)d; }
@@ -2074,6 +2117,13 @@ static void set_param(const char *k, const char *v) {
     }
     // below KBO_MAX_AGE (1 s), with room for one more 250 ms tick of the settle clock
     else if (!strcmp(k, "kbo_quiet")) cfg.kbo_quiet = clamp_d(d, 0.2, 0.7);
+    // 1.8.31 (see the header)
+    else if (!strcmp(k, "vs_open")) set_vs_open(clamp_i(d, 0, 3)); // 1.8.32: 1 opened, 2 closed, 3 both
+    else if (!strcmp(k, "vs_quiet")) cfg.vs_quiet = d < 0.1 ? 0.1 : d > 1.0 ? 1.0 : d;
+    else if (!strcmp(k, "kb_open_full")) {
+        cfg.kb_open_full = d != 0.0;
+        if (!cfg.kb_open_full && kbo_req && !cfg.kb_open_clean) kbo_drop("kb_open_full turned off", now_s());
+    }
     else {
         for (int i = 0; i < CL_N; i++) {
             char nm[32];
@@ -4416,7 +4466,8 @@ static const char *sw_note(char *b, size_t n) {
 //    opened next;
 //  - never while the on-screen keyboard is up (typing); a cycle that waited for it keeps TR_INK_MAX_AGE, so it
 //    cleans once the keyboard has closed (its own keyboard request is then covered by this full clean).
-static int defer_live(void) { return cfg.defer && hb_t > 0 && now_s() - hb_t < 90.0 && xo_state >= 0; }
+static int defer_base_live(void) { return hb_t > 0 && now_s() - hb_t < 90.0 && xo_state >= 0; } // 1.8.31
+static int defer_live(void) { return cfg.defer && defer_base_live(); }
 
 #ifdef __linux__
 static pthread_mutex_t wd_mu = PTHREAD_MUTEX_INITIALIZER;
@@ -4435,7 +4486,9 @@ static void *wd_main(void *arg) {
         int got = 0;
         double t0 = now_s();
         do {
-            if (!__atomic_load_n(&cfg.defer, __ATOMIC_RELAXED)) break; // turned off meanwhile: leave it to xochitl
+            // turned off meanwhile: leave it to xochitl (1.8.31: vs_open counts for a SettingsOpened cycle of its own)
+            if (!__atomic_load_n(&cfg.defer, __ATOMIC_RELAXED) &&
+                !(__atomic_load_n(&wd_vs, __ATOMIC_RELAXED) && __atomic_load_n(&cfg.vs_open, __ATOMIC_RELAXED))) break;
             if (__atomic_load_n(&sleeping, __ATOMIC_ACQUIRE)) break;   // the sleep frame owns the flash
             int w = withdraw_pending();
             if (w > 0 && __atomic_load_n(&sleeping, __ATOMIC_ACQUIRE)) { // lost the race with the sleep guard
@@ -4697,6 +4750,7 @@ static void tr_begin(const char *what) {
         tr_late = 0;
         tr_inked = 0;
         tr_sd = 0;
+        tr_vs = 0; // 1.8.31: on_view_change sets it
     }
     tr_vc_last = t; // the clean waits for this view's first frame too
     tr_inked = 0;   // ink drawn before belonged to the previous view
@@ -4706,9 +4760,25 @@ static void tr_begin(const char *what) {
 
 // "viewChange xofm::libs::ghostbuster::IGhostBuster::ViewChangeMode::<Mode>" (called with mu held)
 static int on_view_change(const char *m) {
-    if (!defer_live() || !fb || n_updates == 0 || sleeping) return 0;
     const char *mode = strstr(m, "ViewChangeMode::");
-    tr_begin(mode ? mode + 16 : "?");
+    const char *kind = mode ? mode + 16 : "?";
+    // 1.8.31: with defer 0, vs_open defers SettingsOpened; 1.8.32: and/or SettingsClosed (bit 2; see the header)
+    int vs = !cfg.defer && (((cfg.vs_open & 1) && !strncmp(kind, "SettingsOpened", 14)) ||
+                            ((cfg.vs_open & 2) && !strncmp(kind, "SettingsClosed", 14)));
+    if (!(cfg.defer || vs) || !defer_base_live() || !fb || n_updates == 0 || sleeping) {
+        if (tr_active && tr_vs) { // its own stock flash goes over the whole screen: no clean after it
+            tr_active = 0;
+            tr_vs = 0;
+            n_vs_end++;
+            glog("view change %.40s while %s waited for its clean (vs_open): its own stock flash goes out, cycle ended",
+                 kind, tr_what);
+        }
+        return 0;
+    }
+    tr_begin(kind);
+    tr_vs = vs;
+    if (vs) n_vs++;
+    __atomic_store_n(&wd_vs, vs, __ATOMIC_RELAXED);
     if (promote_live && turn_full_np) { // second review: a turn's byte (turn_full) no frame took yet is taken back
         promote_live = 0;               // first, so the helper's one take is the view change's own byte (as the
         turn_full_np = 0;               // document close does)
@@ -5114,7 +5184,7 @@ static int kbo_try(int pen) {
         pthread_mutex_unlock(&mu);
         return 0;
     }
-    Rect r = kbo_box;
+    Rect r = cfg.kb_open_full ? (Rect){0, 0, SW, SH} : kbo_box; // 1.8.31: the whole screen (see the header)
     double age = t - kbo_t;
     kbo_req = 0;
     pthread_mutex_unlock(&mu);
@@ -5136,7 +5206,8 @@ static int kbo_try(int pen) {
     }
     pthread_mutex_unlock(&mu);
     if (!quiet_retry)
-        glog("keyboard open: in-place clean of the keyboard band %d,%d %dx%d %.0f ms after it was drawn (%s) -> %s", r.x,
+        glog("keyboard open: in-place clean of %s %d,%d %dx%d %.0f ms after it was drawn (%s) -> %s",
+             rect_full(r) ? "the whole screen" : "the keyboard band", r.x,
              r.y, r.w, r.h, age * 1000.0, swb, rc);
     return 1;
 }
@@ -5239,7 +5310,8 @@ static const char *deferred_clean(int from_hb, int pen) {
         pthread_mutex_unlock(&mu);
         return "aged";
     }
-    double quiet = from_hb ? TR_HB_QUIET : tr_inked && cfg.tr_quiet < TR_INK_QUIET ? TR_INK_QUIET : cfg.tr_quiet;
+    double tq = tr_vs ? cfg.vs_quiet : cfg.tr_quiet; // 1.8.31: a SettingsOpened cycle of vs_open has its own
+    double quiet = from_hb ? TR_HB_QUIET : tr_inked && tq < TR_INK_QUIET ? TR_INK_QUIET : tq;
     // minor ui updates (sync icons) are not part of the view's drawing: t_last_major skips them
     if (!drawn ||                                                         // nothing redrawn yet
         t - t_last_major < quiet ||                                       // the screen is still changing
@@ -5253,7 +5325,7 @@ static const char *deferred_clean(int from_hb, int pen) {
     }
     Rect r = tr_box, r0 = tr_box; // r0: the changed area itself (1.8.3: a retry pads it once again, not twice)
     double age = t - tr_t0, wait0 = tr_wait_t;
-    int wd = tr_withdrawn, late = tr_late, inked = tr_inked, kbh = tr_kb_held;
+    int wd = tr_withdrawn, late = tr_late, inked = tr_inked, kbh = tr_kb_held, vs = tr_vs; // 1.8.31: vs
     char what[48];
     snprintf(what, sizeof what, "%s", tr_what);
     tr_active = 0;
@@ -5302,6 +5374,7 @@ static const char *deferred_clean(int from_hb, int pen) {
             tr_inked = inked;
             tr_kb_held = kbh;
             tr_wait_t = wait0;
+            tr_vs = vs; // 1.8.31
         }
         rect_union(&tr_box, r0);
         if (!strcmp(rc, "inflight") && tr_wait_t <= 0) {
@@ -5317,7 +5390,8 @@ static const char *deferred_clean(int from_hb, int pen) {
         char wb[64] = "";
         if (up) snprintf(wb, sizeof wb, " (whole screen: the panel stayed busy)");
         else if (wait0 > 0) snprintf(wb, sizeof wb, " (after waiting %.0f ms for the panel)", (t - wait0) * 1000.0);
-        glog("view change %s: in-place clean %d,%d %dx%d %.0f ms later%s%s, stock flash %s (%s) -> %s", what, r.x, r.y, r.w,
+        glog("view change %s%s: in-place clean %d,%d %dx%d %.0f ms later%s%s, stock flash %s (%s) -> %s", what,
+             vs ? " (vs_open)" : "", r.x, r.y, r.w,
              r.h, age * 1000.0, inked ? " (after writing)" : "", wb, late ? "went out anyway" : wd ? "withdrawn" : "not seen",
              swb, rc);
     }

@@ -85,6 +85,14 @@ followed by a space, drag the unpacked folder into the terminal window, and pres
 bash install.sh
 ```
 
+The installer also installs the four start-up extras (see the README, "Start-up extras"): a black-and-white page turn like the colour one, a refresh button, and cleaner view changes. To install only some of them, or none, set `GG_EXTRAS` for the run:
+
+```bash
+GG_EXTRAS="bwturn ggrefresh" bash install.sh
+```
+
+`GG_EXTRAS=none bash install.sh` installs none (then the behaviour is that of ggsense 1.8.30). The extras are `bwturn`, `ggrefresh`, `viewchange` and `settingskb`, always installed in this order. To change the set later, run `install.sh` again with another `GG_EXTRAS`, then restart the tablet.
+
 The installer works through six parts. It prints what it is about to do and asks `[y/N]` before each change; type
 `y` and press `Enter` to go on, or just `Enter` to stop.
 
@@ -116,6 +124,9 @@ After the restart:
    ```
 
    The last line should say `RESULT: GhostGuard is running.`
+   `bash status.sh log` shows the start's result line, which names the extras, for example
+   `... extras: bwturn on, ggrefresh on, viewchange on, settingskb on`. An extra that was not confirmed shows as
+   `<name> not confirmed`; GhostGuard still runs.
 
 From now on this happens by itself after every start of the tablet: about three minutes after you last touched it,
 the interface restarts once and GhostGuard is on. Until then the tablet behaves like stock.
@@ -125,7 +136,14 @@ You can unplug the cable. The computer is only needed again to check, change or 
 ## Step 7: Try it
 
 Open a colour PDF and turn some pages. A turn away from a colour page is now one short full refresh and the old
-page should be gone. Black-and-white pages still turn without a flash.
+page should be gone. With the `bwturn` extra (installed by default) black-and-white pages turn the same way, with
+one full refresh; without it they turn without a flash.
+
+With the `ggrefresh` extra the document toolbar has a refresh button right below undo/redo. A tap is one full
+refresh of the screen. It appears only once GhostGuard has started, a few minutes after a boot.
+
+Opening and closing Settings, and opening the on-screen keyboard, each get one clean refresh about half a second
+later; that is the `settingskb` extra.
 
 If you do not like it, see [SETTINGS.md](SETTINGS.md) for the alternatives, or remove it.
 
@@ -195,7 +213,9 @@ If you prefer not to run a script that configures things for you, these are the 
 4. The boot installer (without `--go` it only shows what it would do):
 
    ```bash
-   bash deploy/persist_install.sh --go --so prebuilt/ggsense.so --clock tools/clock14f.js
+   bash deploy/persist_install.sh --go --so prebuilt/ggsense.so --clock tools/clock14f.js --extra tools/bwturn.js --extra tools/ggrefresh.js --extra tools/viewchange.js --extra tools/settingskb.js
    ```
+
+   Each `--extra FILE` installs one start-up extra; leave them out for none.
 
 5. Restart the tablet and wait as in step 6.

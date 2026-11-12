@@ -5,13 +5,15 @@
 # xochitl and two bad boots disable it (see deploy/boot/autostart.sh). Nothing changes in the running boot.
 # Default is a DRY RUN: builds and checks the staging folder here and prints the commands for the tablet; nothing
 # is sent. --go runs them.
-#   bash deploy/persist_install.sh [--go] [--so LIB] [--kbd FILE] [--clock FILE] [--ver TEXT] [--copy-so] [--stage DIR]
+#   bash deploy/persist_install.sh [--go] [--so LIB] [--kbd FILE] [--clock FILE] [--extra FILE]... [--ver TEXT] [--stage DIR]
 #     --so LIB      the ggsense build the boots arm (default ggsense/ggsense184.so). It goes with the staging folder
 #                   as the boot's own pinned copy, /home/root/ghostguard/boot/ggsense.so (the boot drop-in preloads
 #                   that file); its md5 and version string go into the staged scripts. The library a deploy by hand
 #                   uses (/home/root/ghostguard/ggsense.so) is never touched: such a deploy cannot change what boots
 #     --copy-so     no longer needed (accepted and ignored)
 #     --kbd/--clock the runtime QML (default tools/kbd_overlay.js, tools/clock12.js), turned into payloads now
+#     --extra FILE  optional, repeatable: one more runtime QML file, sent after the clock at every start, in the
+#                   order given (e.g. tools/bwturn.js, tools/ggrefresh.js). An install without it has no extras
 #     --ver TEXT    the library's version string, when it cannot be read from LIB (e.g. "ggsense 1.8.1")
 #     --stage DIR   build the staging folder in DIR/boot (kept) instead of a temporary folder
 # Needs `ssh remarkable` (key login) for --go. Remove: bash deploy/persist_uninstall.sh
@@ -19,6 +21,7 @@ set -eu
 P=$(cd "$(dirname "$0")/.." && pwd)
 GO=0
 COPY=0
+EXTRAS=()
 LIB=$P/ggsense/ggsense184.so
 KBD=$P/tools/kbd_overlay.js
 CLOCK=$P/tools/clock12.js
@@ -38,9 +41,10 @@ while [ $# -gt 0 ]; do
         --so) need "$@"; LIB=$2; shift ;;
         --kbd) need "$@"; KBD=$2; shift ;;
         --clock) need "$@"; CLOCK=$2; shift ;;
+        --extra) need "$@"; EXTRAS+=("$2"); shift ;;
         --ver) need "$@"; VER=$2; shift ;;
         --stage) need "$@"; STAGE_DIR=$2; shift ;;
-        -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,19p' "$0"; exit 0 ;;
         *) echo "persist_install: unknown option $1 (see --help)" >&2; exit 2 ;;
     esac
     shift
@@ -59,7 +63,11 @@ if [ -z "$VER" ]; then
     VER=$vers
 fi
 case "$VER" in *[!A-Za-z0-9.\ _-]*|'') die "odd version string '$VER'" ;; esac
-for f in "$KBD" "$CLOCK" "$P/tools/ggtool" "$P/deploy/gg_autorollback.sh"; do [ -f "$f" ] || die "missing $f"; done
+for f in "$KBD" "$CLOCK" ${EXTRAS[@]+"${EXTRAS[@]}"} "$P/tools/ggtool" "$P/deploy/gg_autorollback.sh"; do
+    [ -f "$f" ] || die "missing $f"
+done
+XARGS=()
+for f in ${EXTRAS[@]+"${EXTRAS[@]}"}; do XARGS+=(--extra "$f"); done
 file -b "$P/tools/ggtool" | grep -q 'ELF 64-bit LSB.*aarch64' || die "tools/ggtool is not an aarch64 Linux binary"
 LC_ALL=C grep -a -q 'bad quiet/max' "$P/tools/ggtool" || die "tools/ggtool has no 'quiet' command (rebuild it)"
 command -v python3 > /dev/null || die "python3 not found"
@@ -94,7 +102,7 @@ cp "$P"/deploy/boot/dropins/30-ggsense.conf "$P"/deploy/boot/dropins/zz-ghostgua
 cp "$P/deploy/gg_autorollback.sh" "$SB/gg_autorollback.sh"
 cp "$P/tools/ggtool" "$SB/ggtool"
 cp "$LIB" "$SB/ggsense.so"
-python3 -I "$P/deploy/boot/mkpayload.py" "$SB/payload" --kbd "$KBD" --clock "$CLOCK"
+python3 -I "$P/deploy/boot/mkpayload.py" "$SB/payload" --kbd "$KBD" --clock "$CLOCK" ${XARGS[@]+"${XARGS[@]}"}
 chmod 0755 "$SB"/*.sh "$SB/ggtool" "$SB/ggsense.so"
 chmod 0644 "$SB"/units/* "$SB"/dropins/* "$SB"/payload/*
 if grep -r -l -E '__SO_MD5__|__GG_VER__' "$SB" > /dev/null; then die "placeholders left in $SB"; fi

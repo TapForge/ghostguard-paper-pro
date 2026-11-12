@@ -47,8 +47,9 @@ Running `bash install.sh` again is always safe: it skips what is already done.
 ## It runs, but I still see ghosting
 
 - **Check what kind of page it is.** Only turns *away from* a page with real colour get the full refresh.
-  Black-and-white pages are turned without a flash and keep a small trace by design; after many such pages a
-  view change (closing the document, opening the page overview) cleans the screen.
+  With the `bwturn` extra (installed by default) black-and-white pages turn like colour pages. Without it they
+  are turned without a flash and keep a small trace by design; after many such pages a view change (closing the
+  document, opening the page overview) cleans the screen.
 - **The first turn after opening a document** and a turn from a black-and-white page onto a colour page are not
   treated specially in this release.
 - **Warm tablet.** Above 28 °C panel temperature (long use while charging, sunlight) the correction for colour
@@ -58,6 +59,22 @@ Running `bash install.sh` again is always safe: it skips what is already done.
 
 You can also try the double pass ([SETTINGS.md](SETTINGS.md)): it is slower and flashes twice, but it was the
 cleanest variant in our tests.
+
+## An extra does something I do not like
+
+The four start-up extras (README, "Start-up extras") are each easy to undo.
+
+- **Now, until the next restart:** `bash settings.sh tf_chroma 25` (`bwturn`: colour pages only), `bash settings.sh defer 1` (`viewchange`), `bash settings.sh vs_open 0` and `bash settings.sh kb_open_full 0` (`settingskb`).
+- **For good:** the extras send their settings again at every start, so run the installer again with another set and restart the tablet: `GG_EXTRAS="bwturn ggrefresh" bash install.sh` keeps only the named ones, `GG_EXTRAS=none bash install.sh` installs none.
+- **An extra shows `<name> not confirmed`** in the start's result line (`bash status.sh log`). GhostGuard still runs; the extra did not take. Restart the tablet; if it stays, open an issue with the log.
+
+## The refresh button is not there
+
+The button (extra `ggrefresh`) sits in the document toolbar, right below undo/redo. Check:
+
+- The document toolbar is showing; the button moves and hides with it.
+- GhostGuard has started. The button is made after every start of the interface, so after a boot it appears only a few minutes later. `bash status.sh` should say `RESULT: GhostGuard is running.`
+- The result line names `ggrefresh on` (`bash status.sh log`). If the extra was not installed, install again without `GG_EXTRAS=none`.
 
 ## The page turn flashes and I do not like it
 
