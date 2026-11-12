@@ -1,0 +1,12 @@
+[Unit]
+Description=GhostGuard: arm XOVI + ggsense 70 s after boot
+
+[Timer]
+# 70 s > rm-sanity.timer's OnBootSec=60s, which resets the bootloader's root${part}_errcnt and swu_applied:
+# arming only after that, a crash here can never make the bootloader fall back to the other root partition.
+OnBootSec=70s
+AccuracySec=1s
+Unit=ghostguard-autostart.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,21 @@
+[Unit]
+Description=GhostGuard rescue: xochitl failed with XOVI on; disable the boot arming, back to stock xochitl
+# Started only through OnFailure= on xochitl.service, added by zz-ghostguard.conf in XOVI's drop-in tmpfs (XOVI
+# copies its template there at every start; xovi/stock removes it with the tmpfs).
+DefaultDependencies=no
+Conflicts=shutdown.target
+Before=shutdown.target
+ConditionPathExists=/home/root/ghostguard/boot/rescue.sh
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash /home/root/ghostguard/boot/rescue.sh
+TimeoutStartSec=60
+# rm-emergency's reboot (started by the same xochitl failure) stops this unit through Conflicts=shutdown.target:
+# SIGCONT instead of SIGTERM lets rescue.sh write the disable sentinel and sync first (at most 10 s, then SIGKILL)
+KillSignal=SIGCONT
+TimeoutStopSec=10
+SuccessExitStatus=0 1 2 SIGTERM SIGKILL
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ghostguard

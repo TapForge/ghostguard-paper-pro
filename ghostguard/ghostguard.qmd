@@ -1,0 +1,609 @@
+AFFECT /qml/device/view/main/MainView.qml
+    TRAVERSE Background#root
+        LOCATE AFTER ALL
+        INSERT {
+            Item {
+                // ===================== GhostGuard v7.1 (rMPP ferrari, xochitl 3.29.1) =====================
+                // Need-based ghost removal bound to transitions. ggsense.so (LD_PRELOAD) keeps a per-pixel
+                // residue model of the panel: each partial update adds the luma change of every pixel it
+                // changes (weighted by update class), complete refreshes clear it. It answers rec none/soon/now
+                // plus the bounding box of the ghosted cells. This layer only decides WHEN and WHERE:
+                //   Settings                 : never acts (stock cleans once as Settings opens and once as it closes)
+                //   document, rec>=turnLevel : the next page turn becomes the clean (scheduleGhostRemoval, so the
+                //                              new page is drawn with one flash, as part of the transition)
+                //   any view, rec "now"      : after idleCleanMs without screen activity and with the pen away,
+                //                              clean only the ghosted rectangle (regional STD); full only if idleFull
+                //   otherwise                : nothing (no settle-time cleans, no area budget, no page counter)
+                // enabled=false + shadow=true: evaluates and logs "SHADOW# would ..." without touching the panel;
+                // the sensor model forgets that rectangle, so the log follows what would really happen.
+                // Settings file: /home/root/ghostguard/control.json (polled every 3 s). No sensor -> passive.
+                // ===========================================================================================
+                id: xoviGhostGuard
+
+                // ---------------- tunables (overridable from control.json) ----------------
+                property bool enabled: false
+                property bool shadow: true
+                property bool debugLog: true
+                property int settleMs: 2500
+                property int minGapMs: 3000
+                property int penQuietMs: 9000
+                property int docPenQuietMs: 20000
+                property int idleCleanMs: 20000
+                property int idleMinArea: 4096
+                property bool docTransition: true
+                property string turnLevel: "soon"
+                property bool idleRegional: true
+                property bool idleFull: false
+                property bool regional: true
+                property int regionalMargin: 8
+                property int bleachArmMs: 180
+
+                // ---------------- state ----------------
+                property bool regionalAvailable: true
+                property real lastClearMs: 0
+                property real lastPenMs: 0
+                property real ignoreUntil: 0
+                property var lastStatus: null
+                property string lastRec: "none"
+                property int qid: 0
+                property int retries: 0
+                property bool pendingTransition: false
+                property int checks: 0
+                property int idleChecks: 0
+                property int clears: 0
+                property int transitionCleans: 0
+                property int regionalCleans: 0
+                property int shadowActs: 0
+                property int bleaches: 0
+                property int pageTurns: 0
+                property int fbEvents: 0
+                property int lastCmdId: 0
+                property bool cmdPrimed: false
+                property string sensorCfg: ""
+                property string lastMode: ""
+                property var shim: null
+                property bool bleachInFlight: false
+                property var lastDocument: null
+
+                function log(s) {
+                    console.log("XOVI-GG71 " + s);
+                }
+
+                function dbg(s) {
+                    if (xoviGhostGuard.debugLog) {
+                        console.log("XOVI-GG71 " + s);
+                    }
+                }
+
+                function now() {
+                    return Date.now();
+                }
+
+                function mode() {
+                    return xoviGhostGuard.enabled ? "LIVE" : (xoviGhostGuard.shadow ? "SHADOW" : "OFF");
+                }
+
+                function observing() {
+                    return xoviGhostGuard.enabled || xoviGhostGuard.shadow;
+                }
+
+                function docItem() {
+                    return documentView && documentView.item ? documentView.item : null;
+                }
+
+                function inDocument() {
+                    var d = xoviGhostGuard.docItem();
+                    return !!(d && d.documentLoaded);
+                }
+
+                function settingsOpen() {
+                    try {
+                        return !!(root.windowLayout && root.windowLayout.contains("settings/window/main"));
+                    } catch (e) {
+                        return false;
+                    }
+                }
+
+                function context() {
+                    if (xoviGhostGuard.settingsOpen()) {
+                        return "settings";
+                    }
+                    return xoviGhostGuard.inDocument() ? "document" : "other";
+                }
+
+                function recLevel(r) {
+                    return r === "now" ? 2 : (r === "soon" ? 1 : 0);
+                }
+
+                function summary(s) {
+                    if (!s) {
+                        return "no-sensor";
+                    }
+                    return "rec=" + s.rec + "/" + s.scope + " ghost=" + s.ghost + " active=" + s.active + " hot=" + s.hot
+                            + " maxCell=" + s.maxCell + " bbox=" + (s.bbox ? s.bbox.join(",") : "-") + " sinceClean=" + s.sinceClean;
+                }
+
+                // Ask ggsense.so: the console.log line is handled synchronously by the sensor, which writes
+                // its answer to /run/ghostguard/status.json before console.log returns.
+                function ask(cmd, cb) {
+                    xoviGhostGuard.qid = xoviGhostGuard.qid + 1;
+                    var my = String(xoviGhostGuard.qid);
+                    console.log("GGQ " + my + " " + cmd);
+                    var x = new XMLHttpRequest();
+                    x.onreadystatechange = function() {
+                        if (x.readyState !== XMLHttpRequest.DONE) {
+                            return;
+                        }
+                        var s = null;
+                        try {
+                            s = JSON.parse(x.responseText);
+                        } catch (e) {
+                            s = null;
+                        }
+                        if (s && s.q !== my) {
+                            s = null;
+                        }
+                        if (cb) {
+                            cb(s);
+                        }
+                    };
+                    x.open("GET", "file:///run/ghostguard/status.json");
+                    x.send();
+                }
+
+                function screenOk() {
+                    return BatteryManager.displayState === BatteryManager.Normal && rootItem.visible;
+                }
+
+                function gapOk() {
+                    return xoviGhostGuard.now() - xoviGhostGuard.lastClearMs >= xoviGhostGuard.minGapMs;
+                }
+
+                function restartIdle(ms) {
+                    if (!xoviGhostGuard.observing()) {
+                        return;
+                    }
+                    xoviGgIdle.interval = Math.max(1000, ms);
+                    xoviGgIdle.restart();
+                }
+
+                // shadow mode: log the action and let the sensor forget that rectangle (model only)
+                function pretend(what, x, y, w, h, s) {
+                    xoviGhostGuard.shadowActs = xoviGhostGuard.shadowActs + 1;
+                    xoviGhostGuard.lastClearMs = xoviGhostGuard.now();
+                    xoviGhostGuard.pendingTransition = false;
+                    xoviGhostGuard.log("SHADOW#" + xoviGhostGuard.shadowActs + " would " + what + " rect=" + x + "," + y + " " + w + "x" + h
+                                       + " ctx=" + xoviGhostGuard.context() + " " + xoviGhostGuard.summary(s));
+                    xoviGhostGuard.ask("sim " + x + " " + y + " " + w + " " + h, null);
+                }
+
+                function blink(reason, s, manual) {
+                    if (!xoviGhostGuard.enabled && !manual) {
+                        xoviGhostGuard.pretend("FULL-CLEAN reason=" + reason, 0, 0, 1620, 2160, s);
+                        return;
+                    }
+                    var t0 = xoviGhostGuard.now();
+                    xoviGhostGuard.clears = xoviGhostGuard.clears + 1;
+                    xoviGhostGuard.lastClearMs = t0;
+                    xoviGhostGuard.pendingTransition = false;
+                    EPFramebuffer.clearGhosting();
+                    xoviGhostGuard.ignoreUntil = xoviGhostGuard.now() + 400;
+                    xoviGhostGuard.log("CLEAN#" + xoviGhostGuard.clears + " reason=" + reason + " " + xoviGhostGuard.summary(s)
+                                       + " blocked=" + (xoviGhostGuard.now() - t0) + "ms");
+                }
+
+                function installShim() {
+                    if (xoviGhostGuard.shim) {
+                        return true;
+                    }
+                    var w = EPFramebuffer.width > 0 ? EPFramebuffer.width : 1620;
+                    var h = EPFramebuffer.height > 0 ? EPFramebuffer.height : 2160;
+                    var src = 'import QtQuick; import xofm.libs.epaper as Epaper; Epaper.ScreenModeItem { '
+                            + 'objectName: "ghostguard-sleepshim"; x: 0; y: 0; width: ' + w + '; height: ' + h + '; '
+                            + 'z: 100000; visible: false; enabled: false; mode: Epaper.ScreenModeItem.Sleep }';
+                    try {
+                        xoviGhostGuard.shim = Qt.createQmlObject(src, root, "ghostguardShim");
+                    } catch (e) {
+                        xoviGhostGuard.log("sleep shim unavailable: " + e);
+                        xoviGhostGuard.shim = null;
+                        return false;
+                    }
+                    return true;
+                }
+
+                // deep clean (same waveform path as the sleep screen); manual command only
+                function bleach(reason) {
+                    if (!xoviGhostGuard.installShim() || xoviGhostGuard.bleachInFlight) {
+                        xoviGhostGuard.blink(reason + "/no-shim", null, true);
+                        return;
+                    }
+                    xoviGhostGuard.bleachInFlight = true;
+                    xoviGhostGuard.lastClearMs = xoviGhostGuard.now();
+                    xoviBleachArm.reason = reason;
+                    xoviGhostGuard.shim.visible = true;
+                    xoviBleachArm.interval = xoviGhostGuard.bleachArmMs;
+                    xoviBleachArm.restart();
+                }
+
+                function regionalUsable(s) {
+                    return xoviGhostGuard.regional && xoviGhostGuard.regionalAvailable && s && s.scope === "regional" && s.rcap !== -1
+                            && s.bbox && s.bbox[2] > 0 && s.bbox[3] > 0;
+                }
+
+                // flash only the ghosted rectangle (the sensor sends that region with the STD waveform)
+                function rclean(s, reason) {
+                    var m = xoviGhostGuard.regionalMargin;
+                    var x = Math.max(0, s.bbox[0] - m);
+                    var y = Math.max(0, s.bbox[1] - m);
+                    var w = Math.min(1620 - x, s.bbox[2] + 2 * m);
+                    var h = Math.min(2160 - y, s.bbox[3] + 2 * m);
+                    if (!xoviGhostGuard.enabled) {
+                        xoviGhostGuard.pretend("REGIONAL reason=" + reason, x, y, w, h, s);
+                        return;
+                    }
+                    xoviGhostGuard.lastClearMs = xoviGhostGuard.now();
+                    xoviGhostGuard.ask("rclean " + x + " " + y + " " + w + " " + h, function(r) {
+                        if (!r) {
+                            return; // reply overwritten by another query; the next idle check re-evaluates
+                        }
+                        if (r.rc === "ok") {
+                            xoviGhostGuard.retries = 0;
+                            xoviGhostGuard.regionalCleans = xoviGhostGuard.regionalCleans + 1;
+                            xoviGhostGuard.log("REGIONAL#" + xoviGhostGuard.regionalCleans + " reason=" + reason + " rect=" + x + "," + y + " " + w + "x" + h
+                                               + " before{" + xoviGhostGuard.summary(s) + "} after{" + xoviGhostGuard.summary(r) + "}");
+                            xoviGhostGuard.decide(r, "after-regional");
+                            return;
+                        }
+                        xoviGhostGuard.lastClearMs = 0;
+                        if ((r.rc === "busy" || r.rc === "notready" || r.rc === "sleepmap") && xoviGhostGuard.retries < 3) {
+                            xoviGhostGuard.retries = xoviGhostGuard.retries + 1;
+                            xoviGhostGuard.dbg("regional clean " + r.rc + " (" + r.why + "), retry " + xoviGhostGuard.retries);
+                            xoviGhostGuard.restartIdle(1000);
+                            return;
+                        }
+                        xoviGhostGuard.retries = 0;
+                        if (r.rc === "unsupported") {
+                            xoviGhostGuard.regionalAvailable = false;
+                        }
+                        xoviGhostGuard.log("regional clean not possible: " + r.rc + " (" + r.why + ")"
+                                           + (xoviGhostGuard.idleFull ? "; full clean instead" : "; left for the next transition"));
+                        if (xoviGhostGuard.idleFull) {
+                            xoviGhostGuard.blink(reason + "/fallback", s, false);
+                        }
+                    });
+                }
+
+                // bookkeeping only: never cleans by itself
+                function decide(s, reason) {
+                    xoviGhostGuard.lastStatus = s;
+                    if (!s || !s.ok) {
+                        return;
+                    }
+                    if (s.rec !== xoviGhostGuard.lastRec) {
+                        xoviGhostGuard.dbg("REC " + xoviGhostGuard.lastRec + "->" + s.rec + " at " + reason + " ctx=" + xoviGhostGuard.context() + " "
+                                           + xoviGhostGuard.summary(s));
+                        xoviGhostGuard.lastRec = s.rec;
+                    }
+                    var lvl = xoviGhostGuard.recLevel(s.rec);
+                    var due = lvl > 0 && lvl >= xoviGhostGuard.recLevel(xoviGhostGuard.turnLevel) && xoviGhostGuard.inDocument()
+                            && !xoviGhostGuard.settingsOpen();
+                    if (due && !xoviGhostGuard.pendingTransition) {
+                        xoviGhostGuard.dbg("ghosting on the page; the next page turn cleans. " + xoviGhostGuard.summary(s));
+                    }
+                    xoviGhostGuard.pendingTransition = due;
+                }
+
+                function check(reason) {
+                    xoviGhostGuard.checks = xoviGhostGuard.checks + 1;
+                    xoviGhostGuard.ask("status", function(s) {
+                        xoviGhostGuard.decide(s, reason);
+                    });
+                }
+
+                // the screen has been quiet for idleCleanMs: clean a heavily ghosted region, never inside Settings
+                function idleCheck() {
+                    if (!xoviGhostGuard.observing()) {
+                        return;
+                    }
+                    xoviGhostGuard.idleChecks = xoviGhostGuard.idleChecks + 1;
+                    xoviGhostGuard.ask("status", function(s) {
+                        xoviGhostGuard.decide(s, "idle");
+                        if (!s || !s.ok || s.rec !== "now") {
+                            return;
+                        }
+                        if (xoviGhostGuard.settingsOpen() || !xoviGhostGuard.screenOk()) {
+                            return;
+                        }
+                        var d = xoviGhostGuard.docItem();
+                        var doc = !!(d && d.documentLoaded);
+                        if (doc && d.isLoading) {
+                            xoviGhostGuard.restartIdle(1000);
+                            return;
+                        }
+                        var need = doc ? xoviGhostGuard.docPenQuietMs : xoviGhostGuard.penQuietMs;
+                        if (PenClosenessMonitor.penWasClose) {
+                            xoviGhostGuard.lastPenMs = xoviGhostGuard.now();
+                            xoviGhostGuard.dbg("idle clean due but the pen is near; waiting. " + xoviGhostGuard.summary(s));
+                            return; // the pen leaving restarts the idle timer
+                        }
+                        var since = xoviGhostGuard.now() - xoviGhostGuard.lastPenMs;
+                        if (since < need) {
+                            xoviGhostGuard.restartIdle(need - since + 100);
+                            return;
+                        }
+                        if (!xoviGhostGuard.gapOk()) {
+                            return;
+                        }
+                        if (xoviGhostGuard.idleRegional && xoviGhostGuard.regionalUsable(s)) {
+                            xoviGhostGuard.rclean(s, "idle");
+                        } else if (xoviGhostGuard.idleFull) {
+                            xoviGhostGuard.blink("idle", s, false);
+                        } else {
+                            xoviGhostGuard.dbg("ghosting spread over the screen; left for the next transition. " + xoviGhostGuard.summary(s));
+                        }
+                    });
+                }
+
+                function onPageTurned() {
+                    var d = xoviGhostGuard.docItem();
+                    if (!d || !d.document || d.currentPage < 0) {
+                        return;
+                    }
+                    if (d.document !== xoviGhostGuard.lastDocument) {
+                        // newly opened document: stock already refreshes completely when it appears
+                        xoviGhostGuard.lastDocument = d.document;
+                        xoviGhostGuard.pendingTransition = false;
+                        return;
+                    }
+                    xoviGhostGuard.pageTurns = xoviGhostGuard.pageTurns + 1;
+                    var s = xoviGhostGuard.lastStatus;
+                    xoviGhostGuard.dbg("PAGE " + d.currentPage + " pending=" + xoviGhostGuard.pendingTransition + " " + xoviGhostGuard.summary(s));
+                    if (!xoviGhostGuard.observing() || !xoviGhostGuard.docTransition || !xoviGhostGuard.pendingTransition) {
+                        return;
+                    }
+                    if (PenClosenessMonitor.penWasClose || !xoviGhostGuard.screenOk() || !xoviGhostGuard.gapOk()) {
+                        xoviGhostGuard.dbg("page-turn clean skipped (pen=" + PenClosenessMonitor.penWasClose + " screen=" + xoviGhostGuard.screenOk()
+                                           + " gap=" + xoviGhostGuard.gapOk() + ")");
+                        return;
+                    }
+                    if (!xoviGhostGuard.enabled) {
+                        xoviGhostGuard.pretend("TRANSITION-CLEAN page=" + d.currentPage, 0, 0, 1620, 2160, s);
+                        return;
+                    }
+                    EPFramebuffer.scheduleGhostRemoval();
+                    xoviGhostGuard.transitionCleans = xoviGhostGuard.transitionCleans + 1;
+                    xoviGhostGuard.lastClearMs = xoviGhostGuard.now();
+                    xoviGhostGuard.pendingTransition = false;
+                    xoviGhostGuard.log("TRANSITION-CLEAN#" + xoviGhostGuard.transitionCleans + " page=" + d.currentPage + " " + xoviGhostGuard.summary(s));
+                }
+
+                function applyConfig(cfg) {
+                    var nums = ["settleMs", "minGapMs", "penQuietMs", "docPenQuietMs", "idleCleanMs", "idleMinArea", "regionalMargin", "bleachArmMs"];
+                    for (var i = 0; i < nums.length; i++) {
+                        if (typeof cfg[nums[i]] === "number") {
+                            xoviGhostGuard[nums[i]] = cfg[nums[i]];
+                        }
+                    }
+                    var bools = ["enabled", "shadow", "debugLog", "docTransition", "idleRegional", "idleFull", "regional"];
+                    for (var j = 0; j < bools.length; j++) {
+                        if (typeof cfg[bools[j]] === "boolean") {
+                            xoviGhostGuard[bools[j]] = cfg[bools[j]];
+                        }
+                    }
+                    if (typeof cfg.turnLevel === "string") {
+                        xoviGhostGuard.turnLevel = cfg.turnLevel;
+                    }
+                    if (cfg.sensor && typeof cfg.sensor === "object") {
+                        var js = JSON.stringify(cfg.sensor);
+                        if (js !== xoviGhostGuard.sensorCfg) {
+                            xoviGhostGuard.sensorCfg = js;
+                            for (var k in cfg.sensor) {
+                                if (typeof cfg.sensor[k] === "number") {
+                                    xoviGhostGuard.ask("set " + k + " " + cfg.sensor[k], null);
+                                }
+                            }
+                            xoviGhostGuard.log("sensor config " + js);
+                        }
+                    }
+                    var m = xoviGhostGuard.mode();
+                    if (m !== xoviGhostGuard.lastMode) {
+                        xoviGhostGuard.lastMode = m;
+                        xoviGhostGuard.log("mode " + m);
+                        if (!xoviGhostGuard.observing()) {
+                            xoviGgIdle.stop();
+                            xoviGgSettle.stop();
+                            xoviGhostGuard.pendingTransition = false;
+                        }
+                    }
+                }
+
+                function stats() {
+                    return "mode=" + xoviGhostGuard.mode() + " checks=" + xoviGhostGuard.checks + " idleChecks=" + xoviGhostGuard.idleChecks
+                            + " clears=" + xoviGhostGuard.clears + " transitionCleans=" + xoviGhostGuard.transitionCleans
+                            + " regionalCleans=" + xoviGhostGuard.regionalCleans + " shadowActs=" + xoviGhostGuard.shadowActs
+                            + " bleaches=" + xoviGhostGuard.bleaches + " pageTurns=" + xoviGhostGuard.pageTurns + " fbEvents=" + xoviGhostGuard.fbEvents
+                            + " ctx=" + xoviGhostGuard.context() + " pending=" + xoviGhostGuard.pendingTransition
+                            + " last{" + xoviGhostGuard.summary(xoviGhostGuard.lastStatus) + "}";
+                }
+
+                function runCommand(cmd) {
+                    var name = cmd.name ? String(cmd.name) : "";
+                    try {
+                        if (name === "blink") {
+                            xoviGhostGuard.blink("cmd", xoviGhostGuard.lastStatus, true);
+                        } else if (name === "bleach") {
+                            xoviGhostGuard.bleach("cmd");
+                        } else if (name === "stats") {
+                            xoviGhostGuard.log("STATS " + xoviGhostGuard.stats());
+                        } else if (name === "check") {
+                            xoviGhostGuard.check("cmd");
+                        } else if (name === "idle") {
+                            xoviGhostGuard.idleCheck();
+                        } else if (name === "rclean") {
+                            // manual test: arg "x y w h"
+                            xoviGhostGuard.ask("rclean " + String(cmd.arg), function(r) {
+                                xoviGhostGuard.log("RCLEAN-CMD [" + cmd.arg + "] => " + (r ? r.rc + " (" + r.why + ") " + xoviGhostGuard.summary(r) : "no reply"));
+                            });
+                        } else if (name === "caps") {
+                            xoviGhostGuard.ask("caps", function(r) {
+                                xoviGhostGuard.log("CAPS => " + (r ? r.rc + " rcap=" + r.rcap + " (" + r.why + ")" : "no reply"));
+                            });
+                        } else if (name === "map") {
+                            xoviGhostGuard.ask("map", function(s) {
+                                xoviGhostGuard.log("MAP written. " + xoviGhostGuard.summary(s));
+                            });
+                        } else if (name === "eval") {
+                            var r = eval(String(cmd.arg));
+                            xoviGhostGuard.log("EVAL [" + cmd.arg + "] => " + r);
+                        } else if (name.length > 0 && name !== "none") {
+                            xoviGhostGuard.log("unknown command " + name);
+                        }
+                    } catch (e) {
+                        xoviGhostGuard.log("command error " + name + ": " + e);
+                    }
+                }
+
+                Timer {
+                    id: xoviBleachArm
+                    property string reason: ""
+                    interval: 180
+                    repeat: false
+                    onTriggered: {
+                        var t1 = xoviGhostGuard.now();
+                        try {
+                            EPFramebuffer.clearGhosting();
+                        } catch (e) {
+                            xoviGhostGuard.log("bleach failed: " + e);
+                        }
+                        if (xoviGhostGuard.shim) {
+                            xoviGhostGuard.shim.visible = false;
+                        }
+                        xoviGhostGuard.bleaches = xoviGhostGuard.bleaches + 1;
+                        xoviGhostGuard.lastClearMs = xoviGhostGuard.now();
+                        xoviGhostGuard.bleachInFlight = false;
+                        xoviGhostGuard.log("BLEACH#" + xoviGhostGuard.bleaches + " reason=" + xoviBleachArm.reason + " blocked=" + (xoviGhostGuard.now() - t1) + "ms");
+                    }
+                }
+
+                // after a burst of screen updates: refresh the bookkeeping (never cleans)
+                Timer {
+                    id: xoviGgSettle
+                    interval: xoviGhostGuard.settleMs
+                    repeat: false
+                    onTriggered: {
+                        xoviGhostGuard.check("settle");
+                    }
+                }
+
+                // no significant screen update for idleCleanMs
+                Timer {
+                    id: xoviGgIdle
+                    interval: 20000
+                    repeat: false
+                    onTriggered: {
+                        xoviGhostGuard.idleCheck();
+                    }
+                }
+
+                Timer {
+                    id: xoviGgControl
+                    interval: 3000
+                    repeat: true
+                    running: true
+                    triggeredOnStart: true
+                    onTriggered: {
+                        var xhr = new XMLHttpRequest();
+                        xhr.onreadystatechange = function() {
+                            if (xhr.readyState !== XMLHttpRequest.DONE) {
+                                return;
+                            }
+                            var txt = xhr.responseText;
+                            if (!txt || txt.length < 2) {
+                                return;
+                            }
+                            var cfg;
+                            try {
+                                cfg = JSON.parse(txt);
+                            } catch (e) {
+                                return;
+                            }
+                            xoviGhostGuard.applyConfig(cfg);
+                            if (cfg.cmd && cfg.cmd.id !== undefined) {
+                                if (!xoviGhostGuard.cmdPrimed) {
+                                    // the command already in the file at startup is history, never replay it
+                                    xoviGhostGuard.cmdPrimed = true;
+                                    xoviGhostGuard.lastCmdId = cfg.cmd.id;
+                                } else if (cfg.cmd.id !== xoviGhostGuard.lastCmdId) {
+                                    xoviGhostGuard.lastCmdId = cfg.cmd.id;
+                                    xoviGhostGuard.runCommand(cfg.cmd);
+                                }
+                            }
+                        };
+                        xhr.open("GET", "file:///home/root/ghostguard/control.json");
+                        xhr.send();
+                    }
+                }
+
+                Connections {
+                    target: PenClosenessMonitor
+
+                    function onPenWasCloseChanged() {
+                        xoviGhostGuard.lastPenMs = xoviGhostGuard.now();
+                        xoviGhostGuard.restartIdle(xoviGhostGuard.idleCleanMs);
+                    }
+                }
+
+                Connections {
+                    target: documentView ? documentView.item : null
+                    ignoreUnknownSignals: true
+
+                    function onCurrentPageChanged() {
+                        xoviGhostGuard.onPageTurned();
+                    }
+                }
+
+                Connections {
+                    target: EPFramebuffer
+
+                    function onFramebufferUpdated(r) {
+                        xoviGhostGuard.fbEvents = xoviGhostGuard.fbEvents + 1;
+                        if (!xoviGhostGuard.observing() || xoviGhostGuard.now() < xoviGhostGuard.ignoreUntil) {
+                            return;
+                        }
+                        var area = 1620 * 2160;
+                        try {
+                            if (r && r.width !== undefined) {
+                                area = r.width * r.height;
+                            }
+                        } catch (e) {
+                            area = 1620 * 2160;
+                        }
+                        if (area < xoviGhostGuard.idleMinArea) {
+                            return; // clock, cursor and small indicators are not user activity
+                        }
+                        xoviGhostGuard.retries = 0;
+                        xoviGgSettle.restart();
+                        xoviGhostGuard.restartIdle(xoviGhostGuard.idleCleanMs);
+                    }
+                }
+
+                Component.onCompleted: {
+                    xoviGhostGuard.qid = (Date.now() % 1000000) * 10;
+                    xoviGhostGuard.lastMode = xoviGhostGuard.mode();
+                    xoviGhostGuard.log("v7.1 loaded (transition-bound, sensor-driven); mode " + xoviGhostGuard.mode() + " until control.json is read");
+                    xoviGhostGuard.ask("hello", function(s) {
+                        xoviGhostGuard.log(s ? "sensor connected (" + s.v + "): " + xoviGhostGuard.summary(s) : "sensor NOT available; staying passive");
+                        if (s) {
+                            xoviGhostGuard.ask("caps", function(r) {
+                                xoviGhostGuard.log("regional clean capability: " + (r ? r.rc + " (" + r.why + ")" : "unknown"));
+                                if (r && r.rc === "unsupported") {
+                                    xoviGhostGuard.regionalAvailable = false;
+                                }
+                            });
+                        }
+                    });
+                }
+            }
+        }
+    END TRAVERSE
+END AFFECT

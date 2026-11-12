@@ -1,0 +1,22 @@
+[Unit]
+Description=GhostGuard: arm XOVI + ggsense once after boot, then keep its runtime QML applied
+# Started only by ghostguard-autostart.timer, 70 s after boot. Nothing in the boot waits on this unit and it never
+# fails: autostart.sh exits 0 on every path (logs: journalctl -t ghostguard, /home/root/ghostguard/boot/state/).
+After=xochitl.service home.mount
+ConditionPathIsMountPoint=/home
+ConditionPathExists=/home/root/ghostguard/boot/autostart.sh
+ConditionPathExists=/home/root/xovi/start
+
+[Service]
+# simple, not oneshot: after arming, autostart.sh stays for the rest of the boot as the monitor (re-applies the
+# runtime QML after a xochitl restart); a oneshot start job would time out and kill it.
+# No sandboxing options: XOVI's start mounts a tmpfs that systemd and xochitl must see.
+Type=simple
+ExecStart=/bin/bash /home/root/ghostguard/boot/autostart.sh
+Restart=no
+TimeoutStopSec=15
+SuccessExitStatus=0 1 2 SIGTERM SIGKILL
+Nice=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ghostguard

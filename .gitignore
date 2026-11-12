@@ -1,0 +1,6 @@
+install.log
+ggsense/testrun*/
+ggsense/test_ggsense
+ggsense/fuzz_ggsense
+*.dSYM/
+.DS_Store

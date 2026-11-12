@@ -1,0 +1,20 @@
+{
+ "_help": "GhostGuard control file. The QML part reads it every 3 seconds; no restart is needed. 'enabled' and 'shadow' belong to the old QML-only cleaner and stay false: the ggsense engine does the work and is not switched here. The 'cmd' line is how the tools on the computer send a command; do not edit it by hand.",
+ "enabled": false,
+ "shadow": false,
+ "debugLog": true,
+ "settleMs": 2500,
+ "minGapMs": 3000,
+ "penQuietMs": 9000,
+ "docPenQuietMs": 20000,
+ "idleCleanMs": 20000,
+ "idleMinArea": 4096,
+ "docTransition": true,
+ "turnLevel": "soon",
+ "idleRegional": true,
+ "idleFull": false,
+ "regional": true,
+ "regionalMargin": 8,
+ "sensor": {"w_ui": 1.0, "w_content": 0.5, "w_pen": 1.0, "w_mono": 0.8, "w_anim": 1.5, "w_overlay": 1.0, "beta": 0.35, "tau": 1.0, "light_min": 150, "cell_min": 6, "min_cells": 12, "soon_px": 6000, "now_px": 24000, "quiet_s": 2.0, "regional_max": 0.35},
+ "cmd": {"id": 1, "name": "none", "arg": ""}
+}
